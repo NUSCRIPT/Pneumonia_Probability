@@ -1,0 +1,295 @@
+---
+title: "Pna_probability_code"
+output: html_document
+date: "2025-06-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+## Load packages, open libraries and import datasets
+
+```{r, echo=FALSE, warning=FALSE}
+library(FSA)
+library(dplyr)
+library(stats)
+library(RColorBrewer)
+library(ggplot2)
+library(viridis)
+library(hrbrthemes)
+library(tidyverse)
+library(ggpubr)
+library(lubridate)
+library(tibble)
+library(tidyr)
+library(mice)
+library(naniar)
+library(purrr)
+library(visdat)
+library(readxl)
+library(ggalluvial)
+library(reshape)
+library(gtsummary)
+
+dataset <- read_excel("C:/Users/cononye/Desktop/RStudio/Amylase/CDdataset.xlsx")
+Redcap_Pna_Probability <- read_excel("C:/Users/cononye/Desktop/Pna Pretest Probability/Redcap_Pna_Probability.xlsx")
+```
+
+## Format datasets for analysis
+
+```{r, echo = FALSE, messages=FALSE, include=FALSE}
+#Remove 'NA' from Pna_Probability columns in Redcap data (there is only 1 'NA')
+#Remove 'Indeterminate' from the Pna_Etiology column because this was not a consistently available option (n= 3)
+
+Redcap_Pna_Probability <- subset(Redcap_Pna_Probability, !is.na(Pna_Probability))
+Redcap_Pna_Probability <- subset(Redcap_Pna_Probability, Pna_Etiology != 'Indeterminate')
+
+#Join Pna_probability dataframe with dataset by study ID and BAL date
+df <- merge(Redcap_Pna_Probability, dataset, by.x = c("Study_ID", "Initial_BAL_Date"), by.y = c("pt_study_id", "day_bucket_starts"))
+
+```
+
+## Create dataframe for heatmap
+
+```{r, echo=FALSE, message=FALSE, include=FALSE}
+df$Pna_Probability[df$Pna_Probability=="<=15%"] <- "15% or less"
+df$Pna_Probability[df$Pna_Probability==">85%"] <- "85% or more"
+df$Pna_Probability[df$Pna_Probability=="0.3"] <- "30%"
+df$Pna_Probability[df$Pna_Probability=="0.5"] <- "50%"
+df$Pna_Probability[df$Pna_Probability=="0.7"] <- "70%"
+
+df$Pna_Etiology[df$Pna_Etiology=="Bacterial/Etiology defined"] <- "Bacterial"
+df$Pna_Etiology[df$Pna_Etiology=="Bacterial/viral co-infection"] <- "Bacterial and Viral"
+df$Pna_Etiology[df$Pna_Etiology=="Culture-negative (%PMNs ≥ 50%)"] <- "Culture Negative"
+df$Pna_Etiology[df$Pna_Etiology=="Culture-negative (%PMNs < 50%)"] <- "Culture Negative"
+df$Pna_Etiology[df$Pna_Etiology=="Viral/Etiology defined"] <- "Viral"
+df$Pna_Etiology[df$Pna_Etiology=="Non-pneumonia control"] <- "No Pneumonia"
+
+df$discharge_disposition_name[df$discharge_disposition_name=="SNF"] <- "Alive"
+df$discharge_disposition_name[df$discharge_disposition_name=="Rehab"] <- "Alive"
+df$discharge_disposition_name[df$discharge_disposition_name=="LTACH"] <- "Alive"
+df$discharge_disposition_name[df$discharge_disposition_name=="Hospice"] <- "Alive"
+df$discharge_disposition_name[df$discharge_disposition_name=="Home"] <- "Alive"
+
+#Add a Column for Pretest Probability
+df <- df %>% mutate(Pretest_prob = case_when(Pna_Probability =="70%" ~ "High", Pna_Probability =="85% or more" ~ "High", Pna_Probability =="50%" ~ "Intermediate", Pna_Probability =="30%" ~ "Low", Pna_Probability =="15% or less" ~ "Low"))
+
+#Order the Pneumonia Categories
+df$Pna_Etiology <- factor(df$Pna_Etiology, levels = c("No Pneumonia", "Culture Negative", "Viral", "Bacterial", "Bacterial and Viral"))
+
+```
+
+
+
+
+```{r, echo=FALSE}
+#Heatmap
+df_heatmap <- df %>% count(Pna_Probability, Pna_Etiology, .drop=FALSE) %>% ggplot(aes(x=Pna_Probability, y=Pna_Etiology, fill=n)) +geom_tile() + geom_text(aes(label = n), color = "white", size = 3)+ theme_minimal() + labs(x = "Clinician Probability of Pneumonia", y = "", title = "ICU Clinician Pre-Test Probability of Pneumonia") + theme(axis.text.x = element_text(size=14), legend.title=element_blank(), axis.text.y = element_text(size=14), axis.title.x = element_text(size=14), axis.title.y = element_text(size=14), plot.title = element_text(face="bold")) 
+
+#Alluvial Plot
+alluvial <- ggplot(df, aes(axis1 = Pna_Probability, axis2 = Pna_Etiology, axis3 = discharge_disposition_name)) + scale_x_discrete(limits = c("Pre-Test Probability", "Pneumonia Etiology", "Discharge Disposition"), expand = c(.01, .05)) + ylab("") + scale_fill_brewer(palette = "Accent") + geom_alluvium(aes(fill = Pna_Probability), na.rm = TRUE, cement.alluvia = TRUE) + geom_stratum() + geom_text(stat = "stratum", aes(label = after_stat(stratum))) + theme_minimal() + ggtitle("Pre-Test Probability of Pneumonia Compared to BAL Confirmed Diagnosis") + theme(legend.position = "none", panel.grid.major = element_blank(), plot.title = element_text(hjust = 0.5), panel.grid.minor = element_blank(), axis.text.y = element_blank(), axis.text.x = element_text(size = 12, face = "bold"))
+```
+
+## Combine plots
+
+```{r, echo=FALSE}
+
+library(patchwork)
+figure1 <- alluvial + df_heatmap
+figure1 + plot_annotation(tag_levels = 'A')
+```
+
+## Generate Table 1
+
+```{r, echo=FALSE, include=FALSE}
+#Table 1 Variables
+df$po2_fio2_ratio_avg <- as.numeric(df$po2_fio2_ratio_avg)
+
+Table1 <- df %>% select(Pna_Probability, Year, Pna_Category, Pna_Etiology, edw_adm_age, gender, pt_immunocomp, bmi, viral_pathogen, non_pneu_control, non_pneu_infiltrate, non_pneu_infection, Non_pna_cause, discharge_disposition_name, crrt_flag, hd_flag, pt_category, total_icu_los_days, temperature_max, heart_rate_max, mean_arterial_pressure_avg, bal_wbc_count, hospital_los_days, bal_pct_neutro, norepinephrine_avg, respiratory_rate_avg, wbc_max, platelet_avg, po2_fio2_ratio_avg, hemoglobin_avg, bicarbonate_avg, albumin_avg, plateau_pressure_avg, Pretest_prob, patient_ir_id, Initial_BAL_Date, charlson_comorbidity_index, bal_dt, bal_barcode)
+
+Table1 <- Table1 %>% mutate(RRT = case_when(crrt_flag =="0" ~ "No", crrt_flag =="1" ~ "Yes", hd_flag =="0" ~ "No", hd_flag =="1" ~ "Yes"))
+
+#Vizualize and Impute Missing Data
+vis_miss(Table1)
+Table1[9:16][is.na(Table1[9:16])] <- 'Not Applicable'
+df_imputed <- mice(Table1,m=5,maxit=50,meth="cart",seed=500)
+df_imputed <- complete(df_imputed, 1) 
+
+#Visualize imputed dataset to ensure nothing is missing
+vis_miss(df_imputed)
+```
+
+## Create Table 1
+
+```{r, echo=FALSE}
+
+list_of_labels <- list(Pna_Category="Pneumonia Category", edw_adm_age ="Age, years", bmi = "Body Mass Index, kg/m2", gender="Gender, n (%)", charlson_comorbidity_index= "Charlson Comorbidity Index", pt_immunocomp="Immunocompromised, n (%)", Pna_Etiology="BAL Confirmed Pneumonia Etiology, n (%)", wbc_max="Peripheral Blood Leukocyte Count, cells/microliter", gender="Gender, n (%)", RRT="Renal Replacement Therapy, n (%)", temperature_max="Temperature on Day of BAL, Farenheit", heart_rate_max="Heart Rate, beats per minute", plateau_pressure_avg="Plateau Pressure, cm H2o", hemoglobin_avg="Hemoglobin, grams per deciliter", albumin_avg="Albumin, grams per deciliter", mean_arterial_pressure_avg="Mean Arterial Pressure, mmHg", hospital_los_days="Hospital Length of Stay, days", total_icu_los_days="Total ICU Length of Stay, days", discharge_disposition_name="Hospital Discharge Status, n (%)")
+
+df_imputed$Pna_Category <- factor(df$Pna_Category, levels = c("Non-pneumonia control", "CAP", "HAP", "VAP"))
+
+Table_1 <- df_imputed %>% select(Pna_Probability, Pna_Category, Pna_Etiology, edw_adm_age, gender, bmi, charlson_comorbidity_index, pt_immunocomp, RRT, temperature_max, heart_rate_max, mean_arterial_pressure_avg, po2_fio2_ratio_avg, plateau_pressure_avg, wbc_max, hemoglobin_avg, albumin_avg, hospital_los_days, total_icu_los_days, discharge_disposition_name) %>% tbl_summary(by= Pna_Probability, statistic = list(all_continuous() ~ "{median} ({p25}, {p75})", all_categorical() ~ "{n} ({p}%)"), label=list_of_labels,) |> modify_spanning_header(all_stat_cols() ~ "**Clinician Pre-Test Probability of Pneumonia**")
+
+```
+
+## Convert table to word document
+
+```{r, echo = FALSE}
+library(officer)
+library(flextable)
+
+ft <- as_flex_table(Table_1)
+doc <- body_add_flextable(doc, value=ft)
+print(doc, target="gtsummary_table.docx")
+
+```
+
+## Get stats to compare frequency of discordance
+
+```{r, echo = FALSE}
+df <- data.frame("discordant pretest prob" = c(30, 109), "correct diagnosis" = c(76, 444), row.names = c("low", "high"))
+fisher.test(df)
+
+library(stats)
+pna_type <- data.frame("low prob" = c(21, 54, 34), "higher prob" = c(125, 168, 151), row.names = c("cap", "hap", "vap"))
+result <- chisq.test(pna_type)
+print(result)
+
+```
+
+
+## Boxplots for BAL Characteristics and Barplot for Non-Pneumonia Etiologies
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+#BAL characteristics based on Adjudicated Diagnosis of Pneumonia
+etiology_comparison <- df_imputed %>% select(Pna_Etiology, bal_wbc_count, bal_pct_neutro, wbc_max)
+colnames(etiology_comparison)[colnames(etiology_comparison) == "bal_wbc_count"] <- "BAL WBC Count"
+colnames(etiology_comparison)[colnames(etiology_comparison) == "bal_pct_neutro"] <- "BAL Neutrophil %"
+colnames(etiology_comparison)[colnames(etiology_comparison) == "wbc_max"] <- "Peripheral WBC Count"
+df.m <- melt(etiology_comparison, id.var = "Pna_Etiology")
+df.m$value <- as.numeric(df.m$value)
+p1 <- ggplot(data = df.m, aes(x=Pna_Etiology, y=log(value))) + geom_boxplot(aes(fill=Pna_Etiology), outlier.shape = NA) + geom_jitter(width = 0.1) + scale_fill_viridis_d() + labs(x="Etiology of Pneumonia", y="Median Value on Log Scale") + theme_minimal() + facet_wrap( ~ variable, scales="free") + theme(axis.title.x=element_text(size=12), axis.title.y=element_text(size=12), axis.text.x = element_blank(), legend.position = "bottom", legend.title = element_blank(), legend.text = element_text(size=12), plot.title = element_text(hjust = 0.5, face="bold"), strip.text.x = element_text(size = 12)) + ggtitle("Leukocyte Counts in Patients With and Without Pneumonia") +  geom_signif(comparisons=list(c("No Pneumonia", "Bacterial"), c("No Pneumonia", "Bacterial and Viral"), c("No Pneumonia", "Viral")), map_signif_level = TRUE, step_increase = 0.1, tip_length = 0, textsize = 5) + scale_y_continuous(expand = expansion(mult = c(0, 0.2)))
+
+
+#Non pneumonia Etiologies
+NPC_infiltrate <- subset(df_imputed, Non_pna_cause !="Not Applicable")
+NPC_infiltrate$Non_pna_cause[NPC_infiltrate$Non_pna_cause=="Other (please specify)"] <- "Other"
+NPC_infiltrate$Non_pna_cause[NPC_infiltrate$Non_pna_cause=="Heart failure/pulmonary edema"] <- "Pulmonary Edema"
+NPC_infiltrate$Non_pna_cause <- factor(NPC_infiltrate$Non_pna_cause, levels = c("Other", "Pulmonary Edema", "Atelectasis", "Aspiration", "ARDS", "Pulmonary hemorrhage", "Fluid overload", "Pleural effusion", "Unknown", "Fibrosis"))
+
+p2 <- ggplot(NPC_infiltrate, aes(x=Non_pna_cause)) + geom_bar(stat = 'count', aes(fill=Non_pna_cause)) + scale_fill_viridis_d(option = "plasma") + theme_bw() + labs(x="", y="Number", title="Cause of Infiltrate in Patients Without Pneumonia") + theme(axis.text.x = element_text(size=12, angle = 90, hjust = 1), axis.title.x=element_text(size=12), axis.text.y=element_text(size=12), axis.title.y=element_text(size=12), plot.title = element_text(hjust = 0.5, face="bold"), strip.text = element_text(size=14), legend.position="none")
+
+blank <- ggplot() + theme_void()
+ggarrange(ggarrange(df_heatmap, p2, blank, nrow = 1, widths = c(1, 1, 0), labels=c("A.", "B.")),
+ggarrange(blank, p1, blank, nrow = 1, widths = c(0.5, 1, 0.5)), nrow = 2, legend = "none")
+
+```
+
+## Violin Plots of Differences Between High and Low Pre-Test Probability Cases
+
+```{r, echo=FALSE}
+
+Viral <- subset(df_imputed, Pna_Etiology == "Viral")
+Viral2 <- Viral %>% select(edw_adm_age, temperature_max, bmi, platelet_avg, plateau_pressure_avg, heart_rate_max, norepinephrine_avg, bicarbonate_avg, mean_arterial_pressure_avg, po2_fio2_ratio_avg, wbc_max, Pretest_prob)
+colnames(Viral2)[colnames(Viral2) == "edw_adm_age"] <- "Age"
+colnames(Viral2)[colnames(Viral2) == "temperature_max"] <- "Temperature"
+colnames(Viral2)[colnames(Viral2) == "heart_rate_max"] <- "Heart Rate"
+colnames(Viral2)[colnames(Viral2) == "mean_arterial_pressure_avg"] <- "MAP"
+colnames(Viral2)[colnames(Viral2) == "po2_fio2_ratio_avg"] <- "P:F Ratio"
+colnames(Viral2)[colnames(Viral2) == "wbc_max"] <- "WBC Count"
+colnames(Viral2)[colnames(Viral2) == "plateau_pressure_avg"] <- "Plat. Pressure"
+colnames(Viral2)[colnames(Viral2) == "bicarbonate_avg"] <- "Bicarbonate"
+colnames(Viral2)[colnames(Viral2) == "norepinephrine_avg"] <- "Norepinephrine"
+colnames(Viral2)[colnames(Viral2) == "bmi"] <- "BMI"
+colnames(Viral2)[colnames(Viral2) == "platelet_avg"] <- "Platelets"
+
+df.m <- melt(Viral2, id.var = "Pretest_prob")
+df.m <- subset(df.m, Pretest_prob =="High" | Pretest_prob=="Low")
+df.m$value <- as.numeric(df.m$value)
+p1 <- ggplot(data = df.m, aes(x=Pretest_prob, y=value)) + geom_violin(aes(fill=Pretest_prob)) + scale_fill_brewer(palette="PuBu") + labs(x="Pre-Test Probability for Pneumonia", y="Median Value") + theme_minimal() + facet_wrap( ~ variable, scales="free") + theme(legend.position = "none", plot.title = element_text(hjust = 0.5), strip.text.x = element_text(size = 10)) + ggtitle("Pre-Test Probability in Viral Pneumonia") +  geom_signif(comparisons=list(c("Low", "High")), map_signif_level = TRUE, tip_length = 0, textsize = 4) + scale_y_continuous(expand = expansion(mult = c(0, 0.2)))
+
+
+Bacterial <- subset(df_imputed, Pna_Etiology == "Bacterial and Viral" | Pna_Etiology == "Bacterial")
+Bacterial2 <- Bacterial %>% select(edw_adm_age, temperature_max, bmi, platelet_avg, plateau_pressure_avg, heart_rate_max, norepinephrine_avg, bicarbonate_avg, mean_arterial_pressure_avg, po2_fio2_ratio_avg, wbc_max, Pretest_prob)
+colnames(Bacterial2)[colnames(Bacterial2) == "edw_adm_age"] <- "Age"
+colnames(Bacterial2)[colnames(Bacterial2) == "temperature_max"] <- "Temperature"
+colnames(Bacterial2)[colnames(Bacterial2) == "heart_rate_max"] <- "Heart Rate"
+colnames(Bacterial2)[colnames(Bacterial2) == "mean_arterial_pressure_avg"] <- "MAP"
+colnames(Bacterial2)[colnames(Bacterial2) == "po2_fio2_ratio_avg"] <- "P:F Ratio"
+colnames(Bacterial2)[colnames(Bacterial2) == "wbc_max"] <- "WBC Count"
+colnames(Bacterial2)[colnames(Bacterial2) == "plateau_pressure_avg"] <- "Plat. Pressure"
+colnames(Bacterial2)[colnames(Bacterial2) == "bicarbonate_avg"] <- "Bicarbonate"
+colnames(Bacterial2)[colnames(Bacterial2) == "norepinephrine_avg"] <- "Norepinephrine"
+colnames(Bacterial2)[colnames(Bacterial2) == "bmi"] <- "BMI"
+colnames(Bacterial2)[colnames(Bacterial2) == "platelet_avg"] <- "Platelets"
+
+df.m <- melt(Bacterial2, id.var = "Pretest_prob")
+df.m <- subset(df.m, Pretest_prob =="High" | Pretest_prob=="Low")
+df.m$value <- as.numeric(df.m$value)
+p2 <- ggplot(data = df.m, aes(x=Pretest_prob, y=value)) + geom_violin(aes(fill=Pretest_prob)) + scale_fill_brewer(palette="BuGn") + labs(x="Pre-Test Probability for Pneumonia", y="Median Value") + theme_minimal() + facet_wrap( ~ variable, scales="free") + theme(legend.position = "none", plot.title = element_text(hjust = 0.5), strip.text.x = element_text(size = 10)) + ggtitle("Pre-Test Probability in Bacterial Pneumonia") +  geom_signif(comparisons=list(c("Low", "High")), map_signif_level = TRUE, tip_length = 0, textsize = 4) + scale_y_continuous(expand = expansion(mult = c(0, 0.2)))
+
+
+NPC <- subset(df_imputed, Pna_Etiology == "No Pneumonia")
+NPC2 <- NPC %>% select(edw_adm_age, temperature_max, bmi, platelet_avg, plateau_pressure_avg, heart_rate_max, norepinephrine_avg, bicarbonate_avg, mean_arterial_pressure_avg, po2_fio2_ratio_avg, wbc_max, Pretest_prob)
+colnames(NPC2)[colnames(NPC2) == "edw_adm_age"] <- "Age"
+colnames(NPC2)[colnames(NPC2) == "temperature_max"] <- "Temperature"
+colnames(NPC2)[colnames(NPC2) == "heart_rate_max"] <- "Heart Rate"
+colnames(NPC2)[colnames(NPC2) == "mean_arterial_pressure_avg"] <- "MAP"
+colnames(NPC2)[colnames(NPC2) == "po2_fio2_ratio_avg"] <- "P:F Ratio"
+colnames(NPC2)[colnames(NPC2) == "wbc_max"] <- "WBC Count"
+colnames(NPC2)[colnames(NPC2) == "plateau_pressure_avg"] <- "Plat. Pressure"
+colnames(NPC2)[colnames(NPC2) == "bicarbonate_avg"] <- "Bicarbonate"
+colnames(NPC2)[colnames(NPC2) == "norepinephrine_avg"] <- "Norepinephrine"
+colnames(NPC2)[colnames(NPC2) == "bmi"] <- "BMI"
+colnames(NPC2)[colnames(NPC2) == "platelet_avg"] <- "Platelets"
+
+df.m <- melt(NPC2, id.var = "Pretest_prob")
+df.m <- subset(df.m, Pretest_prob =="High" | Pretest_prob=="Low")
+df.m$value <- as.numeric(df.m$value)
+p3 <- ggplot(data = df.m, aes(x=Pretest_prob, y=value)) + geom_violin(aes(fill=Pretest_prob)) + scale_fill_brewer(palette="Purples") + labs(x="Pre-Test Probability for Pneumonia", y="Median Value") + theme_minimal() + facet_wrap( ~ variable, scales="free") + theme(legend.position = "none", plot.title = element_text(hjust = 0.5), strip.text.x = element_text(size = 10)) + ggtitle("Pre-Test Probability in Patients without Pneumonia") +  geom_signif(comparisons=list(c("Low", "High")), map_signif_level = TRUE, tip_length = 0, textsize = 4) + scale_y_continuous(expand = expansion(mult = c(0, 0.2)))
+
+#Combine graphs
+ggarrange(p1, p2, p3, labels = c("A", "B", "C"), ncol = 3, nrow = 1)
+
+```
+
+#Table of Outcomes
+```{r, echo=FALSE}
+#Non-Pneumonia
+list_of_labels <- list(Pna_Category="Pneumonia Category", Pna_Etiology="BAL Confirmed Pneumonia Etiology, n (%)", hospital_los_days="Hospital Length of Stay, days", total_icu_los_days="Total ICU Length of Stay, days", discharge_disposition_name="Hospital Discharge Status, n (%)")
+
+T1 <- NPC %>% select(Pretest_prob, hospital_los_days, total_icu_los_days, discharge_disposition_name) %>% tbl_summary(by= Pretest_prob, statistic = list(all_continuous() ~ "{median} ({p25}, {p75})", all_categorical() ~ "{n} ({p}%)"), label=list_of_labels,) %>% add_p(pvalue_fun = function(x) style_pvalue(x, digits = 1)) |> modify_spanning_header(all_stat_cols() ~ "**Pre-Test Probability of Pneumonia**")
+
+#Bacterial Pneumonia
+T2 <- Bacterial %>% select(Pretest_prob, hospital_los_days, total_icu_los_days, discharge_disposition_name) %>% tbl_summary(by= Pretest_prob, statistic = list(all_continuous() ~ "{median} ({p25}, {p75})", all_categorical() ~ "{n} ({p}%)"), label=list_of_labels,) %>% add_p(pvalue_fun = function(x) style_pvalue(x, digits = 1))|> modify_spanning_header(all_stat_cols() ~ "**Pre-Test Probability of Pneumonia in Patients With Bacterial Pneumonia**")
+
+#Viral Pneumonia
+T3 <- Viral %>% select(Pretest_prob, hospital_los_days, total_icu_los_days, discharge_disposition_name) %>% tbl_summary(by= Pretest_prob, statistic = list(all_continuous() ~ "{median} ({p25}, {p75})", all_categorical() ~ "{n} ({p}%)"), label=list_of_labels,) %>% add_p(pvalue_fun = function(x) style_pvalue(x, digits = 1))|> modify_spanning_header(all_stat_cols() ~ "**Pre-Test Probability of Pneumonia in Patients With Viral Pneumonia**")
+
+#Culture Negative
+Culture_negative <- subset(df_imputed, Pna_Etiology == "Culture Negative")
+T4 <- Culture_negative %>% select(Pretest_prob, hospital_los_days, total_icu_los_days, discharge_disposition_name) %>% tbl_summary(by= Pretest_prob, statistic = list(all_continuous() ~ "{median} ({p25}, {p75})", all_categorical() ~ "{n} ({p}%)"), label=list_of_labels,) %>% add_p(pvalue_fun = function(x) style_pvalue(x, digits = 1)) |> modify_spanning_header(all_stat_cols() ~ "**Pre-Test Probability of Pneumonia in Patients With Microbiology Negative Pneumonia**")
+
+tbl_merge( tbls = list(T1, T2, T3, T4), tab_spanner=c("Patients Without Pneumonia", "Bacterial Pneumonia", "Viral Pneumonia", "Microbiology Negative Pneumonia")) |>
+  modify_header(label = "**Pre-Test Probability of Pneumonia**")
+
+#To stack tables you could use the alternative line of code:
+#tbl_stack( tbls = list(T1, T2, T3, T4), group_header=c("Patients Without Pneumonia", "Bacterial Pneumonia", "Viral Pneumonia", "Microbiology Negative Pneumonia")) |>
+    modify_header(label = "**Pre-Test Probability of Pneumonia**")
+        
+```
+
+## Table 2 Stats and Post Hoc Tests to Determine Where the Significance Is
+
+```{r, echo=FALSE}
+
+library(FSA)
+kruskal.test(hospital_los_days ~ Pretest_prob, data = Micro_negative)
+dunnTest(hospital_los_days ~ Pretest_prob, data = Micro_negative, method="bonferroni")
+
+kruskal.test(total_icu_los_days ~ Pretest_prob, data = Micro_negative)
+dunnTest(total_icu_los_days ~ Pretest_prob, data = Micro_negative, method="bonferroni")
+
+```
+
