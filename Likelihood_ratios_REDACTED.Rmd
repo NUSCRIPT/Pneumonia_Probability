@@ -1,0 +1,165 @@
+---
+title: "Likelihood Ratios for VAP"
+output: html_document
+date: "2025-09-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Merge dataframe with bal_results dataframe to determine BAL culture quantity
+
+```{r, warning=FALSE, message=FALSE}
+
+#Identify VAP cases
+vap_npc_df <- subset(df, episode_category == "VAP" | episode_category == "NPC")
+#n=185
+
+#Import BAL data
+bal_results <- read_excel("C:/Users/cononye/Desktop/SCRIPT/bal_results.xlsx")
+bal_results <- bal_results %>% select(patient_ir_id, bal_collection_date, organism_1_quantity, organism_1_name, organism_2_quantity, organism_2_name, organism_3_quantity, organism_3_name)
+
+#Merge VAP Cases with BAL cases
+df_with_bals <- merge(vap_npc_df, bal_results, by.x=c("patient_ir_id", "Initial_BAL_Date"), by.y=c("patient_ir_id", "bal_collection_date"))
+n_distinct(df_with_bals$patient_ir_id)
+#n=183
+
+#Note that two IRIDs did not merge, so find irids that did not merge by using setdiff(), join based on the closest BAL date
+not_in_list2 <- setdiff(vap_npc_df$patient_ir_id, df_with_bals$patient_ir_id)
+
+row1 <- subset(vap_npc_df, patient_ir_id == redacted)
+bal_results$bal_collection_date <- as.character(bal_results$bal_collection_date)
+row1_bal <- subset(bal_results, patient_ir_id == redacted & bal_collection_date == "redacted")
+row1_merged <- merge(row1, row1_bal, by.x=c("patient_ir_id"), by.y=c("patient_ir_id"))
+
+row2 <- subset(vap_npc_df, patient_ir_id == redacted)
+row2_bal <- subset(bal_results, patient_ir_id == redacted & bal_collection_date == "redacted")
+row2_merged <- merge(row2, row2_bal, by.x=c("patient_ir_id"), by.y=c("patient_ir_id"))
+
+row3 <- subset(vap_npc_df, patient_ir_id ==redacted)
+row3_bal <- subset(bal_results, patient_ir_id == redacted & bal_collection_date == "redacted")
+row3_merged <- merge(row2, row2_bal, by.x=c("patient_ir_id"), by.y=c("patient_ir_id"))
+
+merged_rows <- rbind(row1_merged, row2_merged, row3_merged)
+missing_in_df2 <- setdiff(names(merged_rows), names(df_with_bals))
+
+df_with_bals$bal_collection_date <- c("")
+df_merged <- rbind(df_with_bals, merged_rows)
+```
+
+
+## Calculate likelihood ratios for VAP based on changes in vital signs (S&A method)
+
+```{r}
+#Convert clinical variables/vitals into binary groups
+df_for_roc <- df_merged
+df_for_roc$wbc_max <- as.numeric(df_for_roc$wbc_max)
+
+#Change Yeast to NA so we don't count the cfus for Yeast
+df_for_roc$organism_1_name[df_for_roc$organism_1_name == "Yeast, Not Cryptococcus Species"] <- NA
+df_for_roc$organism_2_name[df_for_roc$organism_2_name == "Yeast, Not Cryptococcus Species"] <- NA
+df_for_roc$organism_3_name[df_for_roc$organism_3_name == "Yeast, Not Cryptococcus Species"] <- NA
+
+#Create columns for each likelihood ratio variable
+df_for_roc <- df_for_roc %>% mutate(fever = case_when(temperature_max >= 100.4 ~ "Fever", temperature_max < 100.4 ~ "No Fever"))
+df_for_roc <- df_for_roc %>% mutate(hypoxia = case_when(fio2_max <= 30 ~ "No Hypoxia", fio2_max  > 30 ~ "Hypoxia"))
+df_for_roc <- df_for_roc %>% mutate(leukocytosis = case_when(wbc_max <= 12 ~ "No Leukocytosis", wbc_max > 12  ~ "Leukocytosis"))
+df_for_roc <- df_for_roc %>% mutate(cfu = case_when(organism_1_quantity >= 1000 ~ "BAL Positive", organism_2_quantity >=1000 ~ "BAL Positive", organism_3_quantity >=1000 ~ "BAL Positive"))
+df_for_roc$cfu <- df_for_roc$cfu %>% replace_na("BAL Negative")
+
+#Make pretest probability numeric
+df_for_roc <- df_for_roc %>% mutate(probability_for_odds = case_when(Pna_Probability == "15% or less" ~ "0.15", Pna_Probability == "85% or more" ~ "0.85", Pna_Probability == "30%" ~ "0.3", Pna_Probability == "50%" ~ "0.5", Pna_Probability == "70%" ~ "0.7"))
+
+#Likelihood ratios
+df_for_roc$baseline_VAP_odds <- 0.16/(1-0.16)
+
+df_for_roc <- df_for_roc %>% mutate(LR_fever = ifelse(fever=="Fever", df_for_roc$baseline_VAP_odds*1.2, df_for_roc$baseline_VAP_odds*0.86))
+df_for_roc <- df_for_roc %>% mutate(LR_fever_hypoxia = ifelse(hypoxia=="Hypoxia", df_for_roc$LR_fever*1.1, df_for_roc$LR_fever*0.9))
+df_for_roc <- df_for_roc %>% mutate(LR_fever_hypoxia_wbc = ifelse(leukocytosis=="Leukocytosis", df_for_roc$LR_fever_hypoxia*1.3, df_for_roc$LR_fever_hypoxia*0.74))
+df_for_roc <- df_for_roc %>% mutate(LR_fever_hypoxia_wbc_cxpos = ifelse(cfu=="BAL Positive", df_for_roc$LR_fever_hypoxia_wbc*1.4, df_for_roc$LR_fever_hypoxia_wbc*0.78))
+
+
+#Convert final odds back to probability
+df_for_roc$LR_to_probability <- df_for_roc$LR_fever_hypoxia_wbc_cxpos/(1 + df_for_roc$LR_fever_hypoxia_wbc_cxpos)
+
+test_sample <- df_for_roc %>% select(Pna_Probability, Numeric_probability, episode_category, temperature_max, fever, fio2_max, hypoxia, wbc_max, leukocytosis, cfu, baseline_VAP_odds, LR_fever, LR_fever_hypoxia, LR_fever_hypoxia_wbc, LR_fever_hypoxia_wbc_cxpos, LR_to_probability)
+
+```
+
+## ROC Curves
+
+```{r}
+#ROC Curve for S&A Method for VAP
+library(pROC)
+test_sample_VAP_NPC <- subset(test_sample, episode_category == "VAP" | episode_category == "NPC")
+r <- roc(response=test_sample_VAP_NPC$episode_category, predictor=test_sample_VAP_NPC$LR_to_probability)
+p <- ggroc(r)
+p <- p + ggtitle("VAP vs Non-pneumonia Control Using Soper & Albin Method") + ylab("Sensitivity") + xlab("Specificity") + geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color = "grey", linetype = "dashed") + scale_y_continuous(expand = c(0, 0)) + scale_x_reverse(expand = c(0, 0)) + theme_minimal()
+
+#Get AUROC
+auc <- auc(r)
+ci <- ci.auc(r)
+ci_l <- round(ci[1], 2)
+ci_u <- round(ci[3], 2)
+legend_text <- paste0("AUC = ", round(auc, 2), " (95% CI = ", ci_l, " - ", ci_u, ")")
+p <- p + annotate("text", x = 0.3, y = 0.05, label = legend_text, size=6) + theme_minimal()
+p + theme(axis.text.x=element_text(size=16), legend.position = "bottom", legend.text = element_text(size=8), axis.text.y = element_text(size=16), plot.title = element_text(hjust = 0.5, face="bold", size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), legend.title = element_text(size=16))
+
+#ROC curve for clinician probability for VAP
+library(pROC)
+test_sample_VAP_NPC <- subset(test_sample, episode_category == "VAP" | episode_category == "NPC")
+r <- roc(response=test_sample_VAP_NPC$episode_category, predictor=test_sample_VAP_NPC$Numeric_probability)
+p <- ggroc(r)
+p <- p + ggtitle("Clinician-Assigned Probability for VAP") + ylab("Sensitivity") + xlab("Specificity") + geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color = "grey", linetype = "dashed") + scale_y_continuous(expand = c(0, 0)) + scale_x_reverse(expand = c(0, 0)) + theme_minimal()
+
+#Get AUROC
+auc <- auc(r)
+ci <- ci.auc(r)
+ci_l <- round(ci[1], 2)
+ci_u <- round(ci[3], 2)
+legend_text <- paste0("AUC = ", round(auc, 2), " (95% CI = ", ci_l, " - ", ci_u, ")")
+p <- p + annotate("text", x = 0.3, y = 0.05, label = legend_text, size=6) + theme_minimal()
+p + theme(axis.text.x=element_text(size=16), legend.position = "bottom", legend.text = element_text(size=8), axis.text.y = element_text(size=16), plot.title = element_text(hjust = 0.5, face="bold", size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), legend.title = element_text(size=16))
+
+#Multiple ROC Curves
+rocobj1 <- roc(test_sample_VAP_NPC$episode_category, test_sample_VAP_NPC$LR_to_probability)
+rocobj2 <- roc(test_sample_VAP_NPC$episode_category, test_sample_VAP_NPC$Numeric_probability)
+
+p <- ggroc(list("Soper & Albin Method"= rocobj1, "Clinician Diagnosis on Day of BAL" = rocobj2), linewidth=1.2) + scale_color_manual(values = c("Soper & Albin Method" = "blue", "Clinician Diagnosis on Day of BAL" = "darkgreen")) + theme_minimal()
+p2 <- p + ggtitle("ROC Curves to Differentiate VAP and Non-Pneumonia Cases") + ylab("Sensitivity") + xlab("Specificity") + geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color = "grey", linetype = "dashed") + scale_y_continuous(expand = c(0, 0)) + scale_x_reverse(expand = c(0, 0)) + theme(axis.text.x=element_text(size=16), legend.position = "bottom", legend.text = element_text(size=16), axis.text.y = element_text(size=16), plot.title = element_text(hjust = 0.5, face="bold", size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), legend.title = element_text(size=16))
+  
+auc <- auc(rocobj1)
+ci <- ci.auc(rocobj1)
+ci_l <- round(ci[1], 2)
+ci_u <- round(ci[3], 2)
+legend_text <- paste0("Soper & Albin Method = ", round(auc, 2), " (95% CI = ", ci_l, " - ", ci_u, ")")
+
+auc2 <- auc(rocobj2)
+ci <- ci.auc(rocobj2)
+ci_l <- round(ci[1], 2)
+ci_u <- round(ci[3], 2)
+legend_text2 <- paste0("Clinician Diagnosis = ", round(auc2, 2), " (95% CI = ", ci_l, " - ", ci_u, ")")
+
+p2 + annotate("text", x=0.3, y=0.05, label=legend_text, size=6) + annotate("text", x=0.3, y=0.1, label=legend_text2, size=6)
+
+
+#ROC Curve for All Pneumonia
+df <- df %>% mutate(Pneumonia_vs_NPC = case_when(episode_category =="CAP" ~ 'Pneumonia', episode_category =="HAP" ~ 'Pneumonia', episode_category =="VAP" ~ 'Pneumonia', episode_category =="NPC" ~ 'Non-pneumonia Control'))
+r <- roc(response=df$Pneumonia_vs_NPC, predictor=df$Numeric_probability)
+p <- ggroc(r)
+p <- p + ggtitle("Clinician-Assigned Probability for Pneumonia versus Non-pneumonia Control") + ylab("Sensitivity") + xlab("Specificity") + geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color = "grey", linetype = "dashed") + scale_y_continuous(expand = c(0, 0)) + scale_x_reverse(expand = c(0, 0)) + theme_minimal()
+
+
+#Get area under the curve
+auc <- auc(r)
+ci <- ci.auc(r)
+ci_l <- round(ci[1], 2)
+ci_u <- round(ci[3], 2)
+legend_text <- paste0("AUC = ", round(auc, 2), " (95% CI = ", ci_l, " - ", ci_u, ")")
+p <- p + annotate("text", x = 0.3, y = 0.05, label = legend_text, size=6) + theme_minimal()
+p + theme(axis.text.x=element_text(size=16), legend.position = "bottom", legend.text = element_text(size=8), axis.text.y = element_text(size=16), plot.title = element_text(hjust = 0.5, face="bold", size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), legend.title = element_text(size=16))
+
+```
+
+
